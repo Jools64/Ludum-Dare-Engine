@@ -25,18 +25,6 @@ var ALIGN_RIGHT = "right";
 var ALIGN_TOP = "top";
 var ALIGN_BOTTOM = "bottom";
 
-var ENTITY_TYPE_PLAYER = 0;
-var ENTITY_TYPE_PLAYER_BULLET = 1;
-var ENTITY_TYPE_HAZARD = 2;
-var ENTITY_TYPE_ENEMY = 3;
-var ENTITY_TYPE_ENEMY_BULLET = 4;
-var ENTITY_TYPE_BOMB = 5;
-
-var ENEMY_STREAMER = 0;
-var ENEMY_DIVER = 1;
-var ENEMY_SPINNER = 2;
-var ENEMY_BURSTER = 3;
-
 var game, renderer, input, assets, ease;
 
 //-----------------------------------------------------------------------------
@@ -1047,10 +1035,12 @@ function Game(width, height, actualWidth, actualHeight) {
     this.transition = new TransitionSystem();
 
     this.hasFixedFrameRate = false;
+    this.maxFrameSkip = 8;
     this.frameRateTarget = 60;
-    this.frameCounter = 0;
-    this.fps = this.frameRateTarget;
     this.frameTimer = 0;
+    this.fpsCounter = 0;
+    this.fps = this.frameRateTarget;
+    this.fpsTimer = 0;
     this.deltaTime = 0;
     this.maxDeltaTime = 1 / 10;
     this.lastTime = null;
@@ -1060,6 +1050,17 @@ function Game(width, height, actualWidth, actualHeight) {
 
 Game.prototype.start = function() {
     this.tick();
+}
+
+Game.prototype.setFixedFrameRate = function(frameRateTarget, maxFrameSkip) {
+    this.hasFixedFrameRate = true;
+    this.frameRateTarget = frameRateTarget ? frameRateTarget : this.frameRateTarget;
+    this.maxFrameSkip = maxFrameSkip ? maxFrameSkip : this.maxFrameSkip;
+}
+
+Game.prototype.setVariableFrameRate = function(maxDeltaTime) {
+    this.hasFixedFrameRate = false;
+    this.maxDeltaTime = maxDeltaTime ? maxDeltaTime : this.maxDeltaTime;
 }
 
 Game.prototype.tick = function() {
@@ -1078,30 +1079,49 @@ Game.prototype.tick = function() {
         deltaTime = this.maxDeltaTime;
     }
 
-    if(this.hasFixedFrameRate) {
-        this.deltaTime = 1.0 / this.frameRateTarget;
-    } else {
-        this.deltaTime = deltaTime;
-    }
-
     if(this.scene) {
         this.scene.buildTypeMap();
     }
-    this.update();
-    this.draw();
-    if(this.scene) {
-        this.scene.resolveEntityChanges();
-    }
-    input.endFrame();
 
-    this.frameCounter++;
-    this.frameTimer += deltaTime;
-    if(this.frameTimer > 1) {
-        this.frameTimer -= 1;
+    if(this.hasFixedFrameRate) {
+        this.frameTimer += deltaTime;
+        this.deltaTime = 1.0 / this.frameRateTarget;
+
+        var skips = 0;
+        if(this.frameTimer >= this.deltaTime) {
+            while(this.frameTimer >= this.deltaTime) {
+                if(skips > 0) {
+                    this.postDraw();
+                    input.endFrame();
+                }
+                this.frameTimer -= this.deltaTime;
+                this.update();
+                input.endFrame();
+                if(skips++ > this.maxFrameSkip) {
+                    this.frameTimer = 0;
+                }
+            }
+            this.draw();
+            this.fpsCounter++;
+            this.postDraw();
+            input.endFrame();
+        }
+    } else {
+        this.deltaTime = deltaTime;
+        this.update();
+        this.draw();
+        this.postDraw();
+        input.endFrame();
+        this.fpsCounter++;
+    }
+
+    this.fpsTimer += deltaTime;
+    if(this.fpsTimer > 1) {
+        this.fpsTimer -= 1;
         this.fps = this.frameCounter;
-        this.frameCounter = 0;
-        if(this.frameTimer > 1) {
-            this.frameTimer = 0;
+        this.fpsCounter = 0;
+        if(this.fpsTimer > 1) {
+            this.fpsTimer = 0;
         }
     }
 }
@@ -1128,6 +1148,12 @@ Game.prototype.draw = function() {
     }
 
     renderer.end();
+}
+
+Game.prototype.postDraw = function() {
+    if(this.scene) {
+        this.scene.resolveEntityChanges();
+    }
 }
 
 //-----------------------------------------------------------------------------
@@ -1221,6 +1247,7 @@ Circle.prototype.checkCollision = function(other, positionDelta, intersectionPoi
 function Entity(x, y, radius, color) {
     this.position = new Vector2(x, y);
     this.velocity = new Vector2(0, 0);
+    this.acceleration = new Vector2(0, 0);
     this.collisionVolume = null;
     this.color = color;
     this.types = [];
@@ -1294,8 +1321,10 @@ Entity.prototype.init = function() {
 }
 
 Entity.prototype.update = function(deltaTime) {
-    var delta = this.velocity.clone().scale(deltaTime);
-    this.position.add(delta);
+    this.position.x += this.velocity.x * deltaTime - 0.5 * this.acceleration.x * deltaTime * deltaTime;
+    this.position.y += this.velocity.y * deltaTime - 0.5 * this.acceleration.y * deltaTime * deltaTime;
+    this.velocity.x += this.acceleration.x * deltaTime;
+    this.velocity.y += this.acceleration.y * deltaTime;
 }
 
 Entity.prototype.draw = function() {
