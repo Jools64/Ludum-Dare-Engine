@@ -6,6 +6,10 @@ var KEY_LEFT = "ArrowLeft";
 var KEY_RIGHT = "ArrowRight";
 var KEY_Z = "KeyZ";
 var KEY_X = "KeyX";
+var KEY_W = "KeyW";
+var KEY_A = "KeyA";
+var KEY_S = "KeyS";
+var KEY_D = "KeyD";
 var KEY_SPACE = "Space";
 
 var MOUSE_BUTTON_LEFT = 0;
@@ -26,6 +30,33 @@ var ALIGN_TOP = "top";
 var ALIGN_BOTTOM = "bottom";
 
 var game, renderer, input, assets, ease;
+
+//-----------------------------------------------------------------------------
+
+// https://stackoverflow.com/questions/563198/how-do-you-detect-where-two-line-segments-intersect
+
+function intersectLineVsLine(af, at, bf, bt, intersectionPoint) {
+    var s1x, s1y, s2x, s2y;
+    s1x = at.x - af.x;
+    s1y = at.y - af.y;
+    s2x = bt.x - bf.x;
+    s2y = bt.y - bf.y;
+
+    var s, t;
+    s = (-s1y * (af.x - bf.x) + s1x * (af.y - bf.y)) / (-s2x * s1y + s1x * s2y);
+    t = ( s2x * (af.y - bf.y) - s2y * (af.x - bf.x)) / (-s2x * s1y + s1x * s2y);
+
+    if (s >= 0 && s <= 1 && t >= 0 && t <= 1) {
+        // Collision detected
+        if (intersectionPoint) {
+            intersectionPoint.x = af.x + (t * s1x);
+            intersectionPoint.y = af.y + (t * s1y);
+        }
+        return 1;
+    }
+
+    return false;
+}
 
 //-----------------------------------------------------------------------------
 
@@ -53,19 +84,72 @@ Ease = {
 
 //-----------------------------------------------------------------------------
 
-function Texture(url, onLoad) {
+Utils = {
+    sign : function(value) {
+        return value > 0 ? 1 : value < 0 ? -1 : 0;
+    },
+
+    clamp : function(value, min, max) {
+        return value < min ? min : (value > max ? max : value);
+    },
+
+    distance : function(x1, y1, x2, y2) {
+        var dx = x2 - x1;
+        var dy = y2 - y1;
+        return Math.sqrt((dx * dx) + (dy * dy));
+    },
+
+    randomBetween : function(from, to) {
+        var delta = to - from;
+        return Math.random() * delta + from;
+    },
+
+    angleBetween : function(x1, y1, x2, y2) {
+        var dx = x2 - x1;
+        var dy = y2 - y1;
+        return Math.atan2(-dy, dx);
+    },
+
+    mixin : function(base, mixer) {
+        if(mixer !== undefined) {
+            for(key in mixer) {
+                base[key] = mixer[key];
+            }
+        }
+        return base;
+    }
+};
+
+//-----------------------------------------------------------------------------
+
+function Texture(url, onLoad, size) {
     this.loaded = false;
     this.size = new Vector2();
+    this.renderScale = new Vector2();
     this.image = new Image();
     this.onLoad = onLoad;
-    this.image.addEventListener('load', function() {
+    this.image.addEventListener('load', function(size) {
         this.size.set(this.image.width, this.image.height);
+        if(size) {
+            this.renderScale.set(size.x / this.image.width, size.y / this.image.height);
+        } else {
+            this.renderScale.set(1, 1);
+        }
         this.loaded = true;
         if(this.onLoad) {
             this.onLoad();
         }
-    }.bind(this), false);
+    }.bind(this, size), false);
     this.image.src = url;
+}
+
+//-----------------------------------------------------------------------------
+
+function Bounds(left, top, right, bottom) {
+    this.left = left;
+    this.top = top;
+    this.right = right;
+    this.bottom = bottom;
 }
 
 //-----------------------------------------------------------------------------
@@ -139,6 +223,64 @@ Sprite.prototype.update = function(deltaTime) {
 
 //-----------------------------------------------------------------------------
 
+function Grid(width, height, cellWidth, cellHeight) {
+    this.x = 0;
+    this.y = 0;
+    this.width = width;
+    this.height = height;
+    this.rectangle = new Rectangle(0, 0, cellWidth, cellHeight);
+    this.data = [];
+    this.fill(0);
+}
+
+Grid.prototype.setCellSize = function(width, height) {
+    this.rectangle.width = width;
+    this.rectangle.height = height;
+}
+
+Grid.prototype.fill = function(value) {
+    for(var y = 0; y < this.height; ++y) {
+        for(var x = 0; x < this.width; ++x) {
+            this.data[x + y * this.width] = value;
+        }
+    }
+}
+
+Grid.prototype.set = function(x, y, value) {
+    if(x >= 0 && x < this.width && y >= 0 && y < this.height) {
+        this.data[x + y * this.width] = value;
+    }
+}
+
+Grid.prototype.get = function(x, y) {
+    if(x >= 0 && x < this.width && y >= 0 && y < this.height) {
+        return this.data[x + y * this.width];
+    }
+    return 0;
+}
+
+//-----------------------------------------------------------------------------
+
+function TileMap(texture, width, height, tileWidth, tileHeight) {
+    this.texture = texture;
+    this.grid = new Grid(width, height);
+    this.tileSize = new Vector2(tileWidth, tileHeight);
+}
+
+TileMap.prototype.fill = function(value) {
+    this.grid.fill(value);
+}
+
+TileMap.prototype.set = function(x, y, value) {
+    this.grid.set(x, y, value);
+}
+
+TileMap.prototype.get = function(x, y) {
+    return this.grid.get(x, y);
+}
+
+//-----------------------------------------------------------------------------
+
 function Json(url, onLoad) {
     this.loaded = false;
     this.data = null;
@@ -155,6 +297,28 @@ function Json(url, onLoad) {
                 this.loaded = true;
             }
             if(this.onLoad) {
+                this.onLoad(this.data);
+            }
+        }
+    }.bind(this);
+ 
+    this.request.open("GET", url, true);
+    this.request.send();
+}
+
+//-----------------------------------------------------------------------------
+
+function TextFile(url, onLoad) {
+    this.loaded = false;
+    this.data = null;
+    this.request = new XMLHttpRequest();
+    this.onLoad = onLoad;
+    this.request.onreadystatechange = function() {
+        if(this.request.readyState == 4 && this.request.status == 200) {
+            var data = this.request.responseText;
+            this.loaded = true;
+            this.data = data;
+            if(this.onLoad) {
                 this.onLoad();
             }
         }
@@ -169,14 +333,29 @@ function Json(url, onLoad) {
 function Assets() {
     this.textures = {};
     this.json = {};
+    this.text = {};
     this.onLoad = null;
+
+    this.loadTexture("phoneControllerOverlay", "../engine/assets/textures/phoneControllerOverlay.png");
+    this.loadTexture("regularFont", "../engine/assets/textures/regularFont.png");
+    this.loadJson("regularFontData", "../engine/assets/data/regularFont.json");
 }
 
 Assets.prototype.checkLoaded = function() {
     var loaded = true;
     for(var key in this.textures) {
         if(!this.textures[key].loaded) {
-            var loaded = false;
+            loaded = false;
+        }
+    }
+    for(var key in this.json) {
+        if(!this.json[key].loaded) {
+            loaded = false;
+        }
+    }
+    for(var key in this.text) {
+        if(!this.text[key].loaded) {
+            loaded = false;
         }
     }
     if(loaded && this.onLoad) {
@@ -186,8 +365,44 @@ Assets.prototype.checkLoaded = function() {
     }
 }
 
-Assets.prototype.loadTexture = function(name, url) {
-    this.textures[name] = new Texture(url, this.checkLoaded.bind(this));
+Assets.prototype.load = function(url, onDone) {
+    new Json(url, function(assetList) {
+        var relativePath = "";
+        var lastSlashIndex = url.lastIndexOf("/");
+        if(lastSlashIndex != -1) {
+            relativePath = url.substr(0, lastSlashIndex) + "/";
+        }
+        if(assetList) {
+            if(assetList.textures) {
+                var texturePath = assetList.texturePath === undefined ? "" : assetList.texturePath;
+                texturePath = relativePath + texturePath;
+                for(var i = 0; i < assetList.textures.length; ++i) {
+                    var textureItem = assetList.textures[i];
+                    assets.loadTexture(textureItem.name, texturePath + textureItem.file, textureItem.size);
+                }
+            }
+            if(assetList.json) {
+                var jsonPath = assetList.jsonPath === undefined ? "" : assetList.jsonPath;
+                jsonPath = relativePath + jsonPath;
+                for(var i = 0; i < assetList.json.length; ++i) {
+                    assets.loadJson(assetList.json[i].name, jsonPath + assetList.json[i].file);
+                }
+            }
+            if(assetList.text) {
+                var textPath = assetList.textPath === undefined ? "" : assetList.textPath;
+                textPath = relativePath + textPath;
+                for(var i = 0; i < assetList.text.length; ++i) {
+                    assets.loadText(assetList.text[i].name, textPath + assetList.text[i].file);
+                }
+            }
+            assets.onLoad = onDone;
+        }
+        this.checkLoaded();
+    }.bind(this));
+}
+
+Assets.prototype.loadTexture = function(name, url, size) {
+    this.textures[name] = new Texture(url, this.checkLoaded.bind(this), size);
 }
 
 Assets.prototype.getTexture = function(name) {
@@ -201,6 +416,16 @@ Assets.prototype.loadJson = function(name, url) {
 Assets.prototype.getJson = function(name) {
     if(this.json[name]) {
         return this.json[name].data;
+    }
+}
+
+Assets.prototype.loadText = function(name, url) {
+    this.text[name] = new TextFile(url, this.checkLoaded.bind(this));
+}
+
+Assets.prototype.getText = function(name) {
+    if(this.text[name]) {
+        return this.text[name].data;
     }
 }
 
@@ -251,11 +476,14 @@ Color.prototype.blend = function(other, amount) {
 
 Color.White = new Color(1, 1, 1, 1);
 Color.Black = new Color(0, 0, 0, 1);
+Color.TransparentBlue = new Color(0.2, 0.4, 1.0, 0.5);
+Color.TransparentPurple = new Color(0.6, 0.2, 1.0, 0.5);
 
 //-----------------------------------------------------------------------------
 
-function Font() {
+function Font(properties) {
     this.size = 12;
+    this.lineHeight = this.size;
     this.weight = FONT_WEIGHT_NORMAL;
     this.style = FONT_STYLE_NONE;
     this.family = "arial";
@@ -263,6 +491,7 @@ function Font() {
     this.verticalAlign = ALIGN_TOP;
     this.outlineSize = 0;
     this.outlineColor = 0;
+    Utils.mixin(this, properties);
 }
 
 Font.Default = new Font();
@@ -300,42 +529,81 @@ Font.prototype.applyStyles = function() {
 
 //-----------------------------------------------------------------------------
 
+function BitmapFont(data) {
+    this.texture = assets.getTexture(data.texture);
+    this.characterSize = new Vector2(
+        data.characterSize.width, 
+        data.characterSize.height
+    );
+    this.singleCase = data.singleCase;
+    this.characterMap = [];
+    for(var i = 0; i < 255; ++i) {
+        this.characterMap[i] = -1;
+    }
+    for(var i = 0; i < data.layout.length; ++i) {
+        var c = data.layout.charCodeAt(i);
+        this.characterMap[c] = i;
+    }
+}
+
+//-----------------------------------------------------------------------------
+
 function Vector2(x, y) {
     this.set(x, y);
 }
 
 Vector2.prototype.set = function(x, y) {
-    if(typeof x == "object") {
+    if(x instanceof Vector2) {
         this.x = x.x;
         this.y = x.y;
     } else {
-        this.x = x;
-        this.y = y;
+        this.x = x === undefined ? 0 : x;
+        this.y = y === undefined ? 0 : y;
     }
     return this;
 }
 
-Vector2.prototype.add = function(other) {
-    this.x += other.x;
-    this.y += other.y;
+Vector2.prototype.add = function(x, y) {
+    if(x instanceof Vector2) {
+        this.x += x.x;
+        this.y += x.y;
+    } else {
+        this.x += x;
+        this.y += y;
+    }
     return this;
 }
 
-Vector2.prototype.subtract = function(other) {
-    this.x -= other.x;
-    this.y -= other.y;
+Vector2.prototype.subtract = function(x, y) {
+    if(x instanceof Vector2) {
+        this.x -= x.x;
+        this.y -= x.y;
+    } else {
+        this.x -= x;
+        this.y -= y;
+    }
     return this;
 }
 
-Vector2.prototype.multiply = function(other) {
-    this.x *= other.x;
-    this.y *= other.y;
+Vector2.prototype.multiply = function(x, y) {
+    if(x instanceof Vector2) {
+        this.x *= x.x;
+        this.y *= x.y;
+    } else {
+        this.x *= x;
+        this.y *= y;
+    }
     return this;
 }
 
-Vector2.prototype.divide = function(other) {
-    this.x /= other.x;
-    this.y /= other.y;
+Vector2.prototype.divide = function(x, y) {
+    if(x instanceof Vector2) {
+        this.x /= x.x;
+        this.y /= x.y;
+    } else {
+        this.x /= x;
+        this.y /= y;
+    }
     return this;
 }
 
@@ -345,12 +613,28 @@ Vector2.prototype.scale = function(value) {
     return this;
 }
 
+Vector2.prototype.normalize = function() {
+    var length = this.length();
+    if(length > 0) {
+        this.scale(1 / length);
+    }
+    return this;
+}
+
 Vector2.prototype.clone = function() {
     return new Vector2(this.x, this.y);
 }
 
 Vector2.prototype.dot = function(other) {
     return this.x * other.x + this.y * other.y;
+}
+
+Vector2.prototype.length = function(other) {
+    return Math.sqrt((this.x * this.x) + (this.y * this.y));
+}
+
+Vector2.prototype.lengthSquared = function(other) {
+    return (this.x * this.x) + (this.y * this.y);
 }
 
 Vector2.prototype.distance = function(other) {
@@ -438,6 +722,55 @@ SortTree.prototype._forEach = function(node, callback) {
 
 //-----------------------------------------------------------------------------
 
+function Camera() {
+    this.x = 0;
+    this.y = 0;
+    this.targetX = this.x;
+    this.targetY = this.y;
+    this.bounds = null;
+    this.zoom = 1;
+    this.angle = 0;
+    this.easeSpeed = 16;
+}
+
+Camera.prototype.setPosition = function(x, y, skipEase) {
+    if(x instanceof Vector2) {
+        this.targetX = x.x;
+        this.targetY = x.y;
+    } else {
+        this.targetX = x;
+        this.targetY = y;
+    }              
+    if(this.bounds) {
+        this.targetX = Utils.clamp(this.targetX, this.bounds.left + renderer.size.x * 0.5, this.bounds.right - renderer.size.x * 0.5);
+        this.targetY = Utils.clamp(this.targetY, this.bounds.top  + renderer.size.y * 0.5, this.bounds.bottom - renderer.size.y * 0.5);
+    }
+    if(skipEase) {
+        this.x = this.targetX;
+        this.y = this.targetY;
+    }
+}
+
+Camera.prototype.update = function(deltaTime) {
+    if(this.easeSpeed) {
+        this.x += (this.targetX - this.x) * Math.min(deltaTime * this.easeSpeed, 1);
+        this.y += (this.targetY - this.y) * Math.min(deltaTime * this.easeSpeed, 1);
+    } else {
+        this.x = this.targetX;
+        this.y = this.targetY;
+    }
+}
+
+Camera.prototype.setBounds = function(left, top, right, bottom) {
+    this.bounds = new Bounds(left, top, right, bottom);
+}
+
+Camera.prototype.clearBounds = function() {
+    this.bounds = null;
+}
+
+//-----------------------------------------------------------------------------
+
 function Renderer(width, height, actualWidth, actualHeight) {
     this.size = new Vector2(width, height);
     this.canvas = document.createElement("canvas");
@@ -445,6 +778,10 @@ function Renderer(width, height, actualWidth, actualHeight) {
     this.autoSize = false;
     this.linearFiltering = true;
     this.divisibleAutoSize = false;
+    this.camera = new Camera();
+    this.camera.setPosition(width * 0.5, height * 0.5, true);
+    this.depthSorting = true;
+
     if(!actualWidth || !actualHeight) {
         this.autoSize = true;
         this.resizeToFit();
@@ -490,6 +827,10 @@ Renderer.prototype.resizeToFit = function() {
     this.ctx.save();
 }
 
+Renderer.prototype.update = function(deltaTime) {
+    this.camera.update(deltaTime);
+}
+
 Renderer.prototype.placeInElement = function(element) {
     element.appendChild(this.canvas);
 }
@@ -499,10 +840,29 @@ Renderer.prototype.begin = function() {
     this.renderTree.clear();
 }
 
+Renderer.prototype.applyCameraTranformation = function() {
+    if(this.camera) {
+        // Attempt to prevent glitches caused by subpixel camera positions
+        var zoom = this.canvas.width / this.size.x;
+        this.translate(-this.size.x, -this.size.y);
+        this.scale(this.camera.zoom, this.camera.zoom);
+        this.rotate(this.camera.angle, this.camera.angle);
+        this.translate(this.size.x, this.size.y);
+        this.translate(-this.camera.x + this.size.x * 0.5, -this.camera.y + this.size.y * 0.5);
+    }
+}
+
+Renderer.prototype.flush = function() {
+    if(this.depthSorting) {
+        this.renderTree.forEach(function(item) {
+            item.function.apply(this, item.arguments);
+        }.bind(this));
+        this.renderTree.clear();
+    }
+}
+
 Renderer.prototype.end = function() {
-    this.renderTree.forEach(function(item) {
-        item.function.apply(this, item.arguments);
-    }.bind(this));
+    this.flush();
 }
 
 Renderer.prototype.clear = function() {
@@ -521,12 +881,39 @@ Renderer.prototype.scale = function(x, y) {
     this.ctx.scale(x, y);
 }
 
+Renderer.prototype.rotate = function(angle) {
+    this.ctx.rotate(angle);
+}
+
 Renderer.prototype.translate = function(x, y) {
     this.ctx.translate(x, y);
 }
 
+Renderer.prototype.drawTile = function(x, y, texture, tileWidth, tileHeight, tileIndex, depth) {
+    if(this.depthSorting) {
+        this.renderTree.add({ function : this._drawTile, arguments : arguments}, depth ? -depth : 0);
+    } else {
+        this._drawTile(x, y, texture, tileWidth, tileHeight, tileIndex);
+    }
+}
+
+Renderer.prototype._drawTile = function(x, y, texture, tileWidth, tileHeight, tileIndex) {
+    var frameX = (tileIndex * tileWidth) % texture.size.x;
+    var frameY = (~~((tileIndex * tileWidth) / texture.size.x)) * tileHeight;
+    this.ctx.drawImage(
+        texture.image, frameX, frameY, 
+        tileWidth, tileHeight, 
+        x, y,
+        tileWidth, tileHeight
+    );
+}
+
 Renderer.prototype.drawRectangle = function(x, y, width, height, color, depth) {
-    this.renderTree.add({ function : this._drawRectangle, arguments : arguments}, depth ? -depth : 0);
+    if(this.depthSorting) {
+        this.renderTree.add({ function : this._drawRectangle, arguments : arguments}, depth ? -depth : 0);
+    } else {
+        this._drawRectangle(x, y, width, height, color);
+    }
 }
 
 Renderer.prototype._drawRectangle = function(x, y, width, height, color) {
@@ -535,7 +922,11 @@ Renderer.prototype._drawRectangle = function(x, y, width, height, color) {
 }
 
 Renderer.prototype.drawCircle = function(x, y, radius, color, depth) {
-    this.renderTree.add({ function : this._drawCircle, arguments : arguments}, depth ? -depth : 0);
+    if(this.depthSorting) {
+        this.renderTree.add({ function : this._drawCircle, arguments : arguments}, depth ? -depth : 0);
+    } else {
+        this._drawCircle(x, y, radius, color);
+    }
 }
 
 Renderer.prototype._drawCircle = function(x, y, radius, color) {
@@ -546,17 +937,29 @@ Renderer.prototype._drawCircle = function(x, y, radius, color) {
 }
 
 Renderer.prototype.drawTexture = function(x, y, texture, depth) {
-    this.renderTree.add({ function : this._drawTexture, arguments : arguments}, depth ? -depth : 0);
+    if(this.depthSorting) {
+        this.renderTree.add({ function : this._drawTexture, arguments : arguments}, depth ? -depth : 0);
+    } else {
+        this._drawTexture(x, y, texture);
+    }
 }
 
 Renderer.prototype._drawTexture = function(x, y, texture) {
     if(texture.loaded) {
-        this.ctx.drawImage(texture.image, x, y);
+        this.ctx.drawImage(
+            texture.image, x, y, 
+            texture.size.x * texture.renderScale.x, 
+            texture.size.y * texture.renderScale.y
+        );
     }
 }
 
 Renderer.prototype.drawTextureScaled = function(x, y, texture, scaleX, scaleY, originX, originY, depth) {
-    this.renderTree.add({ function : this._drawTextureScaled, arguments : arguments}, depth ? -depth : 0);
+    if(this.depthSorting) {
+        this.renderTree.add({ function : this._drawTextureScaled, arguments : arguments}, depth ? -depth : 0);
+    } else {
+        this._drawTextureScaled(x, y, texture, scaleX, scaleY, originX, originY);
+    }
 }
 
 Renderer.prototype._drawTextureScaled = function(x, y, texture, scaleX, scaleY, originX, originY) {
@@ -565,13 +968,21 @@ Renderer.prototype._drawTextureScaled = function(x, y, texture, scaleX, scaleY, 
         this.ctx.translate(x + originX, y + originY);
         this.ctx.scale(scaleX, scaleY);
         this.ctx.translate(-(x + originX), -(y + originY));
-        this.ctx.drawImage(texture.image, x, y);
+        this.ctx.drawImage(
+            texture.image, x, y, 
+            texture.size.x * texture.renderScale.x, 
+            texture.size.y * texture.renderScale.y
+        );
         this.ctx.restore();
     }
 }
 
 Renderer.prototype.drawTextureRotated = function(x, y, texture, angle, originX, originY, depth) {
-    this.renderTree.add({ function : this._drawTextureRotated, arguments : arguments}, depth ? -depth : 0);
+    if(this.depthSorting) {
+        this.renderTree.add({ function : this._drawTextureRotated, arguments : arguments}, depth ? -depth : 0);
+    } else {
+        this._drawTextureRotated(x, y, texture, angle, originX, originY);
+    }
 }
 
 Renderer.prototype._drawTextureRotated = function(x, y, texture, angle, originX, originY) {
@@ -580,20 +991,28 @@ Renderer.prototype._drawTextureRotated = function(x, y, texture, angle, originX,
         this.ctx.translate(x + originX, y + originY);
         this.ctx.rotate(angle);
         this.ctx.translate(-(x + originX), -(y + originY));
-        this.ctx.drawImage(texture.image, x, y);
+        this.ctx.drawImage(
+            texture.image, x, y, 
+            texture.size.x * texture.renderScale.x, 
+            texture.size.y * texture.renderScale.y
+        );
         this.ctx.restore();
     }
 }
 
 Renderer.prototype.drawSprite = function(x, y, sprite, depth) {
-    this.renderTree.add({ function : this._drawSprite, arguments : arguments}, depth ? -depth : 0);
+    if(this.depthSorting) {
+        this.renderTree.add({ function : this._drawSprite, arguments : arguments}, depth ? -depth : 0);
+    } else {
+        this._drawSprite(x, y, sprite);
+    }
 }
 
 Renderer.prototype._drawSprite = function(x, y, sprite) {
     if(sprite.visible && sprite.definition.texture && sprite.definition.texture.loaded) {
-        var width = sprite.definition.size.x;
-        var height = sprite.definition.size.y;
         var texture = sprite.definition.texture;
+        var width = sprite.definition.size.x / texture.renderScale.x;
+        var height = sprite.definition.size.y / texture.renderScale.y;
         var frameX = (sprite.frame * width) % texture.size.x;
         var frameY = (~~((sprite.frame * width) / texture.size.x)) * height;
         var scaleX = sprite.scale.x * (sprite.flip.x ? -1 : 1);
@@ -602,15 +1021,114 @@ Renderer.prototype._drawSprite = function(x, y, sprite) {
         this.ctx.save();
         this.ctx.translate((x + sprite.origin.x + sprite.offset.x), (y + sprite.origin.y + sprite.offset.y));
         this.ctx.scale(scaleX, scaleY);
-        this.ctx.rotate(sprite.angle);
+        this.ctx.rotate(-sprite.angle);
         this.ctx.translate(-sprite.origin.x, -sprite.origin.y);
-        this.ctx.drawImage(texture.image, frameX, frameY, width, height, 0, 0, width, height);
+        this.ctx.drawImage(texture.image, frameX, frameY, width, height, 0, 0, width * texture.renderScale.x, height * texture.renderScale.y);
         this.ctx.restore();
     }
 }
 
+Renderer.prototype.drawTileMap = function(x, y, tileMap, depth) {
+    if(this.depthSorting) {
+        this.renderTree.add({ function : this._drawTileMap, arguments : arguments}, depth ? -depth : 0);
+    } else {
+        this._drawTileMap(x, y, tileMap);
+    }
+}
+
+Renderer.prototype._drawTileMap = function(x, y, tileMap) {
+    this.ctx.save();
+    this.ctx.translate(x, y);
+    var uvEpsilon = 0.001; // Prevent flickering between tiles with an epsilon
+    var sizeEpsilon = 0.001;
+    var texture = tileMap.texture;
+    var tileWidth = tileMap.tileSize.x;
+    var tileHeight = tileMap.tileSize.y;
+    var fx = Utils.clamp(Math.floor((this.camera.x - this.size.x * 0.5 - x) / tileWidth), 0, tileMap.grid.width),
+        fy = Utils.clamp(Math.floor((this.camera.y - this.size.y * 0.5 - y) / tileHeight), 0, tileMap.grid.height),
+        tx = Utils.clamp(Math.ceil((this.camera.x + this.size.x * 0.5 - x) / tileWidth), 0, tileMap.grid.width),
+        ty = Utils.clamp(Math.ceil((this.camera.y + this.size.y * 0.5 - y) / tileHeight), 0, tileMap.grid.height);
+    for(var t = fy; t < ty; ++t) {
+        for(var i = fx; i < tx; ++i) {
+            var tileIndex = tileMap.grid.get(i, t);
+            var frameX = (tileIndex * tileWidth) % texture.size.x;
+            var frameY = (~~((tileIndex * tileWidth) / texture.size.x)) * tileHeight;
+            this.ctx.drawImage(
+                texture.image, frameX + uvEpsilon, frameY + uvEpsilon, 
+                tileWidth - uvEpsilon * 2, tileHeight - uvEpsilon * 2, 
+                (i * tileWidth) - sizeEpsilon, (t * tileHeight) - sizeEpsilon, 
+                tileWidth + sizeEpsilon * 2, tileHeight + sizeEpsilon * 2
+            );
+        }
+    }
+    this.ctx.restore();
+}
+
+Renderer.prototype.drawTileBox = function(texture, x, y, width, height, depth) {
+    if(this.depthSorting) {
+        this.renderTree.add({ function : this._drawTileBox, arguments : arguments}, depth ? -depth : 0);
+    } else {
+        this._drawTileMap(texture, x, y, width, height);
+    }
+}
+
+Renderer.prototype._drawTileBox = function(texture, x, y, width, height) {
+    this.ctx.save();
+    this.ctx.translate(x, y);
+    var tileSize = texture.size.x / 3;
+    width = Math.ceil(width / tileSize);
+    height = Math.ceil(height / tileSize);
+    for(var t = 0; t < height; ++t) {
+        for(var i = 0; i < width; ++i) {
+            var index = 4;
+            if(i == 0) {
+                index = 3;
+            } else if(i == width - 1) {
+                index = 5;
+            } else if(t == 0) {
+                index = 1;
+            } else if(t == height - 1) {
+                index = 7;
+            }
+            if(i == 0 && t == 0) {
+                index = 0;
+            } else if(i ==  width - 1 && t == 0) { 
+                index = 2;
+            } else if(i == 0 && t == height - 1) { 
+                index = 6;
+            } else if(i == width - 1 && t == height - 1) { 
+                index = 8;
+            }
+            this._drawTile(i * tileSize, t * tileSize, texture, tileSize, tileSize, index);
+        }
+    }
+    this.ctx.restore();
+}
+
+Renderer.prototype.drawGrid = function(grid, color, depth) {
+    if(this.depthSorting) {
+        this.renderTree.add({ function : this._drawGrid, arguments : arguments}, depth ? -depth : 0);
+    } else {
+        this._drawGrid(grid, color);
+    }
+}
+
+Renderer.prototype._drawGrid = function(grid, color) {
+    for(var y = 0; y < grid.height; ++y) {
+        for(var x = 0; x < grid.width; ++x) {
+            if(grid.get(x, y)) {
+                renderer.drawRectangle(x * grid.rectangle.width, y * grid.rectangle.height, grid.rectangle.width, grid.rectangle.height, color);
+            }
+        }
+    }
+}
+
 Renderer.prototype.drawParticleSystem = function(particleSystem, depth) {
-    this.renderTree.add({ function : this._drawParticleSystem, arguments : arguments}, depth ? -depth : 0);
+    if(this.depthSorting) {
+        this.renderTree.add({ function : this._drawParticleSystem, arguments : arguments}, depth ? -depth : 0);
+    } else {
+        this._drawParticleSystem(particleSystem);
+    }
 }
 
 Renderer.prototype._drawParticleSystem = function(particleSystem) {
@@ -618,21 +1136,233 @@ Renderer.prototype._drawParticleSystem = function(particleSystem) {
 }
 
 Renderer.prototype.drawText = function(x, y, text, color, font, depth) {
-    this.renderTree.add({ function : this._drawText, arguments : arguments}, depth ? -depth : 0);
+    if(this.depthSorting) {
+        this.renderTree.add({ function : this._drawText, arguments : arguments}, depth ? -depth : 0);
+    } else {
+        this._drawText(x, y, text, color, font);
+    }
 }
 
 Renderer.prototype._drawText = function(x, y, text, color, font) {
     var font = font ? font : Font.Default;
-    font.applyStyles();
-    if(font.outlineColor && font.outlineSize) {
-        this.ctx.lineJoin = 'round';
-        this.ctx.miterLimit = 2;
-        this.ctx.strokeStyle = font.outlineColor.toStyle();
-        this.ctx.lineWidth = font.outlineSize;
-        this.ctx.strokeText(text, x, y);
+    if(font instanceof BitmapFont) {
+        var offsetX = 0;
+        var offsetY = 0;
+        if(font.singleCase) {
+            text = text.toLowerCase();
+        }
+        for(var i = 0; i < text.length; ++i) {
+            var c = text.charCodeAt(i);
+            var index = font.characterMap[c];
+            if(c == 10) {
+                offsetY += font.characterSize.y;
+                offsetX = 0;
+            } else {
+                if(index >= 0) {
+                    this._drawTile(
+                        x + offsetX, y + offsetY, font.texture, 
+                        font.characterSize.x, font.characterSize.y, index
+                    );
+                }
+                offsetX += font.characterSize.x;
+            }
+        }
+    } else {
+        font.applyStyles();
+        var lines = text.split("\n");
+        for(var i = 0; i < lines.length; ++i) {
+            var text = lines[i];
+            var offsetY = i * font.lineHeight;
+            switch(font.verticalAlign) {
+                case ALIGN_CENTRE: offsetY -= 0.5 * lines.length * font.lineHeight; break;
+                case ALIGN_BOTTOM: offsetY -= lines.length * font.lineHeight; break;
+                default: break;
+            }
+            if(font.outlineColor && font.outlineSize) {
+                this.ctx.lineJoin = 'round';
+                this.ctx.miterLimit = 2;
+                this.ctx.strokeStyle = font.outlineColor.toStyle();
+                this.ctx.lineWidth = font.outlineSize;
+                this.ctx.strokeText(text, x, y + offsetY);
+            }
+            this.ctx.fillStyle = color.toStyle();
+            this.ctx.fillText(text, x, y + offsetY);
+        }
     }
-    this.ctx.fillStyle = color.toStyle();
-    this.ctx.fillText(text, x, y);
+}
+
+//-----------------------------------------------------------------------------
+
+function ControllerAxis() {
+    this.value = 0;
+    this.lastValue = 0;
+
+    this.negativeKeys = [];
+    this.positiveKeys = [];
+    this.padAxes = [];
+    this.positiveTouchRegion = null;
+    this.negativeTouchRegion = null;
+}
+
+ControllerAxis.prototype.addKeys = function(negativeKey, positiveKey) {
+    this.negativeKeys.push(negativeKey);
+    this.positiveKeys.push(positiveKey);
+}
+
+ControllerAxis.prototype.setTouchRegions = function(negativeBounds, positiveBounds) {
+    this.negativeTouchRegion = negativeBounds
+    this.positiveTouchRegion = positiveBounds;
+}
+
+ControllerAxis.prototype.update = function(input) {
+    this.lastValue = this.value;
+    var negativeValue = 0;
+    var positiveValue = 0;
+    for(var i = 0; i < this.negativeKeys.length; ++i) {
+        if(input.checkKey(this.negativeKeys[i])) {
+            negativeValue += 1;
+        }
+    }
+    for(var i = 0; i < this.positiveKeys.length; ++i) {
+        if(input.checkKey(this.positiveKeys[i])) {
+            positiveValue += 1;
+        }
+    }
+
+    if(this.positiveTouchRegion) {
+        if(input.checkTouchRegion(
+            this.positiveTouchRegion.left, 
+            this.positiveTouchRegion.top, 
+            this.positiveTouchRegion.right, 
+            this.positiveTouchRegion.bottom
+        )) {
+            positiveValue += 1;
+        }
+    }
+
+    if(this.negativeTouchRegion) {
+        if(input.checkTouchRegion(
+            this.negativeTouchRegion.left, 
+            this.negativeTouchRegion.top, 
+            this.negativeTouchRegion.right, 
+            this.negativeTouchRegion.bottom
+        )) {
+            negativeValue += 1;
+        }
+    }
+
+    negativeValue = Math.min(1, negativeValue);
+    positiveValue = Math.min(1, positiveValue);
+    this.value = positiveValue - negativeValue;
+}
+
+//-----------------------------------------------------------------------------
+
+function ControllerButton() {
+    this.value = false;
+    this.pressed = false;
+    this.released = false;
+
+    this.keys = [];
+    this.padButtons = [];
+    this.touchRegion = null;
+}
+
+ControllerButton.prototype.setTouchRegion = function(bounds) {
+    this.touchRegion = bounds;
+}
+
+ControllerButton.prototype.addKey = function(key) {
+    this.keys.push(key);
+}
+
+ControllerButton.prototype.update = function(input) {
+    this.value = false;
+    this.pressed = false;
+    this.released = false;
+    for(var i = 0; i < this.keys.length; ++i) {
+        var key = this.keys[i];
+        if(input.checkKey(key)) {
+            this.value = true;
+        }
+        if(input.checkKeyPressed(key)) {
+            this.pressed = true;
+        }
+        if(input.checkKeyReleased(key)) {
+            this.released = true;
+        }
+    }
+    if(this.touchRegion) {
+        if(input.checkTouchRegion(
+            this.touchRegion.left, 
+            this.touchRegion.top, 
+            this.touchRegion.right, 
+            this.touchRegion.bottom
+        )) {
+            this.value = true;
+        }
+        if(input.checkTouchRegionPressed(
+            this.touchRegion.left, 
+            this.touchRegion.top, 
+            this.touchRegion.right, 
+            this.touchRegion.bottom
+        )) {
+            this.pressed = true;
+        }
+        if(input.checkTouchRegionReleased(
+            this.touchRegion.left, 
+            this.touchRegion.top, 
+            this.touchRegion.right, 
+            this.touchRegion.bottom
+        )) {
+            this.released = true;
+        }
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+function Controller() {
+    this.padIndex = 0;
+    this.axisX = new ControllerAxis();
+    this.axisY = new ControllerAxis();
+    this.action = new ControllerButton();
+    this.cancel = new ControllerButton();
+    this.start = new ControllerButton();
+};
+
+Controller.prototype.applyDefaultBindings = function() {
+    this.axisX.addKeys("ArrowLeft", "ArrowRight");
+    this.axisY.addKeys("ArrowUp", "ArrowDown");
+    this.axisX.addKeys("KeyA", "KeyD");
+    this.axisY.addKeys("KeyW", "KeyS");
+    this.axisX.setTouchRegions(new Bounds(8, 88, 8 + 16, 88 + 48), new Bounds(40, 88, 40 + 16, 88 + 48));
+    this.axisY.setTouchRegions(new Bounds(8, 88, 8 + 48, 88 + 16), new Bounds(8, 120, 48 + 8, 120 + 16));
+    this.action.addKey("KeyZ");
+    this.action.setTouchRegion(new Bounds(216, 105, 216 + 32, 105 + 32));
+    this.cancel.addKey("KeyX");
+    this.cancel.setTouchRegion(new Bounds(176, 105, 176 + 32, 105 + 32));
+    this.start.addKey("Enter");
+    this.start.setTouchRegion(new Bounds(112, 120, 112 + 32, 120 + 20));
+}
+
+Controller.prototype.update = function(input) {
+    for(var key in this) {
+        var binding = this[key];
+        if(binding instanceof ControllerAxis || binding instanceof ControllerButton) {
+            binding.update(input);
+        }
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+function TouchPoint(index) {
+    this.index = index;
+    this.position = new Vector2();
+    this.value = false;
+    this.pressed = false;
+    this.released = false;
 }
 
 //-----------------------------------------------------------------------------
@@ -646,9 +1376,21 @@ function Input(renderer) {
     this.mouseButtonsPressed = {};
     this.mouseButtonsReleased = {};
     this.mousePosition = new Vector2();
+    this.mouseLastPosition = new Vector2();
+    this.mouseDeltaPosition = new Vector2();
     this.mouseDragging = false;
     this.mouseDragOrigin = new Vector2();
     this.mouseDragDistance = new Vector2();
+    this.padButtons = [];
+    this.padButtonsPressed = [];
+    this.padButtonsReleased = [];
+    this.padAxes = [];
+    this.controllers = [];
+    this.touchPoints = [];
+
+    for(var i = 0; i < 8; ++i) {
+        this.touchPoints[i] = new TouchPoint(i);
+    }
 
     document.addEventListener("keydown", function(event) {
         if(!event.repeat) {
@@ -680,6 +1422,108 @@ function Input(renderer) {
         this.mouseButtonsReleased[event.button] = true;
         this.mouseDragging = false;
     }.bind(this));
+
+    window.addEventListener("touchstart", function(event) {
+        event.preventDefault();
+        // TODO: Only fetch bounds once per frame
+        var canvasBounds = this.renderer.canvas.getBoundingClientRect();
+        var touches = event.changedTouches;
+        for(var i = 0; i < touches.length; ++i) {
+            var touch = touches[i];
+            if(this.touchPoints[touch.identifier]) {
+                this.setTouchPositionFromTouch(this.touchPoints[touch.identifier], touch, canvasBounds);
+                this.touchPoints[touch.identifier].value = true;
+                this.touchPoints[touch.identifier].pressed = true;
+            }
+        }
+    }.bind(this), { passive: false });
+
+    window.addEventListener("touchmove", function(event) {
+        event.preventDefault();
+        // TODO: Only fetch bounds once per frame
+        var canvasBounds = this.renderer.canvas.getBoundingClientRect();
+        var touches = event.changedTouches;
+        for(var i = 0; i < touches.length; ++i) {
+            var touch = touches[i];
+            if(this.touchPoints[touch.identifier]) {
+                this.setTouchPositionFromTouch(this.touchPoints[touch.identifier], touch, canvasBounds);
+            }
+        }
+    }.bind(this), { passive: false });
+
+    window.addEventListener("touchend", function(event) {
+        event.preventDefault();
+        // TODO: Only fetch bounds once per frame
+        var canvasBounds = this.renderer.canvas.getBoundingClientRect();
+        var touches = event.changedTouches;
+        for(var i = 0; i < touches.length; ++i) {
+            var touch = touches[i];
+            if(this.touchPoints[touch.identifier]) {
+                this.setTouchPositionFromTouch(this.touchPoints[touch.identifier], touch, canvasBounds);
+                this.touchPoints[touch.identifier].value = false;
+                this.touchPoints[touch.identifier].released = true;
+            }
+        }
+    }.bind(this), { passive: false });
+
+    this.addController();
+}
+
+Input.prototype.setTouchPositionFromTouch = function(touchPoint, touch, canvasBounds) {
+    var x = ((touch.clientX - canvasBounds.left) / (canvasBounds.right - canvasBounds.left)) * renderer.size.x;
+    var y = ((touch.clientY - canvasBounds.top) / (canvasBounds.bottom - canvasBounds.top)) * renderer.size.y;
+    touchPoint.position.set(x, y);
+}
+
+Input.prototype.checkTouchRegion = function(fromX, fromY, toX, toY) {
+    for(var i = 0; i < this.touchPoints.length; ++i) {
+        var point = this.touchPoints[i];
+        var p = point.position;
+        if(point.value && p.x > fromX && p.x < toX && p.y > fromY && p.y < toY) {
+            return true;
+        }
+    }
+    return false;
+}
+
+Input.prototype.checkTouchRegionPressed = function(fromX, fromY, toX, toY) {
+    for(var i = 0; i < this.touchPoints.length; ++i) {
+        var point = this.touchPoints[i];
+        var p = point.position;
+        if(point.pressed && p.x > fromX && p.x < toX && p.y > fromY && p.y < toY) {
+            return true;
+        }
+    }
+    return false;
+}
+
+Input.prototype.checkTouchRegionReleased = function(fromX, fromY, toX, toY) {
+    for(var i = 0; i < this.touchPoints.length; ++i) {
+        var point = this.touchPoints[i];
+        var p = point.position;
+        if(point.released && p.x > fromX && p.x < toX && p.y > fromY && p.y < toY) {
+            return true;
+        }
+    }
+    return false;
+}
+
+Input.prototype.addController = function() {
+    var controller = new Controller();
+    controller.applyDefaultBindings();
+    this.controllers.push(controller);
+    return this.controllers.length - 1;
+}
+
+Input.prototype.getController = function(index) {
+    index = index === undefined ? 0 : index;
+    return this.controllers[index];
+}
+
+Input.prototype.beginFrame = function() {
+    for(var i = 0; i < this.controllers.length; ++i) {
+        this.controllers[i].update(this);
+    } 
 }
 
 Input.prototype.endFrame = function() {
@@ -695,6 +1539,15 @@ Input.prototype.endFrame = function() {
     for(var button in this.mouseButtonsReleased) {
         this.mouseButtonsReleased[button] = false;
     }
+    for(var i = 0; i < this.touchPoints.length; ++i) {
+        var touchPoint = this.touchPoints[i];
+        touchPoint.pressed = false;
+        touchPoint.released = false;
+    }
+    
+    this.mouseDeltaPosition.set(this.mousePosition);
+    this.mouseDeltaPosition.subtract(this.mouseLastPosition);
+    this.mouseLastPosition.set(this.mousePosition);
 }
 
 Input.prototype.checkKey = function(key) {
@@ -850,13 +1703,15 @@ function TransitionSystem() {
     this.playing = false;
     this.duration = 1;
     this.onChange = null;
+    this.onFinish = null;
     this.callbackExecuted = false;
     this.color = Color.Black;
     this.type = TRANSITION_FADE;
 }
 
-TransitionSystem.prototype.begin = function(onChange) {
+TransitionSystem.prototype.begin = function(onChange, onFinish) {
     this.onChange = onChange;
+    this.onFinish = onFinish;
     this.playing = true;
     this.timer = 0;
     this.callbackExecuted = false;
@@ -873,6 +1728,10 @@ TransitionSystem.prototype.update = function(deltaTime) {
         if(this.timer > 1) {
             this.timer = 0;
             this.playing = false;
+            if(this.onFinish) {
+                this.onFinish();
+                this.onFinish = null;
+            }
         }
     }
 }
@@ -989,6 +1848,22 @@ Scene.prototype.checkOverlap = function(entity, type, offset) {
     return null;
 }
 
+Scene.prototype.getAllOverlaps = function(entity, type, offset) {
+    var output = [];
+    var entities = this.entityTypeMap[type];
+    if(entities) {
+        for(var i = 0; i < entities.length; ++i) {
+            var other = entities[i];
+            if(entity != other) {
+                if(entity.checkOverlapWith(other, offset)) {
+                    output.push(other);
+                }
+            }
+        }
+    }
+    return output;
+}
+
 Scene.prototype.getFirstOfType = function(type) {
     if(this.entityTypeMap[type] && this.entityTypeMap[type].length > 0) {
         return this.entityTypeMap[type][0];
@@ -1011,6 +1886,10 @@ Scene.prototype.clearEntities = function() {
     this.entitiesAdded.length = 0;
     this.entitiesRemoved.length = 0;
     this.entitiesCleared = true;
+}
+
+Scene.prototype.clear = function() {
+    this.clearEntities();
 }
 
 Scene.prototype.draw = function() {
@@ -1079,6 +1958,8 @@ Game.prototype.tick = function() {
         deltaTime = this.maxDeltaTime;
     }
 
+    input.beginFrame();
+
     if(this.scene) {
         this.scene.buildTypeMap();
     }
@@ -1118,7 +1999,7 @@ Game.prototype.tick = function() {
     this.fpsTimer += deltaTime;
     if(this.fpsTimer > 1) {
         this.fpsTimer -= 1;
-        this.fps = this.frameCounter;
+        this.fps = this.fpsCounter;
         this.fpsCounter = 0;
         if(this.fpsTimer > 1) {
             this.fpsTimer = 0;
@@ -1133,14 +2014,20 @@ Game.prototype.update = function() {
         this.scene.update(this.deltaTime);
     }
     ease.postUpdate();
+    renderer.update(this.deltaTime);
 }
 
 Game.prototype.draw = function() {
     renderer.begin();
 
+    renderer.save();
+    renderer.applyCameraTranformation();
     if(this.scene) {
         this.scene.draw();
     }
+    renderer.flush();
+    renderer.restore();
+
     this.transition.draw();
 
     if(this.scene && this.debugMode) {
@@ -1200,6 +2087,22 @@ Rectangle.prototype.set = function(x, y, width, height) {
 Rectangle.prototype.checkOverlap = function(other) {
     if(other instanceof Rectangle) {
         return !(this.x >= other.x + other.width || this.y >= other.y + other.height || this.x + this.width <= other.x || this.y + this.height <= other.y);
+    } else if(other instanceof Circle) {
+        if(other.x >= this.x && other.y >= this.y && other.x <= this.x + this.width && other.y <= this.y + this.height) {
+            return true;
+        } else {
+            var closestX = other.x;
+            var closestY = other.y;
+            closestX = Utils.clamp(closestX, this.x, this.x + this.width);
+            closestY = Utils.clamp(closestY, this.y, this.y + this.height);
+
+            var dx = closestX - other.x;
+            var dy = closestY - other.y;
+            var dr = other.radius;
+            return (dx * dx + dy * dy < dr * dr);
+        }
+    } else if(other instanceof Grid) {
+        return other.checkOverlap(this);
     } else {
         console.warn("Unsupported overlap check");
     }
@@ -1207,6 +2110,54 @@ Rectangle.prototype.checkOverlap = function(other) {
 }
 
 Rectangle.prototype.checkCollision = function(other, positionDelta, intersectionPoint) {
+    console.warn("Unsupported collision check");
+}
+
+Rectangle.prototype.getCenter = function() {
+    return new Vector2(this.x + this.width * 0.5, this.y + this.height * 0.5);
+}
+
+//-----------------------------------------------------------------------------
+
+Grid.prototype.checkOverlap = function(other) {
+    if(other instanceof Circle) {
+        var fx = Utils.clamp(Math.floor((other.x - other.radius - this.x) / this.rectangle.width), 0, this.width);
+        var fy = Utils.clamp(Math.floor((other.y - other.radius - this.y) / this.rectangle.height), 0, this.height);
+        var tx = Utils.clamp(Math.ceil((other.x + other.radius - this.x) / this.rectangle.width), 0, this.width);
+        var ty = Utils.clamp(Math.ceil((other.y + other.radius - this.y) / this.rectangle.height), 0, this.height);
+        for(var y = fy; y < ty; ++y) {
+            for(var x = fx; x < tx; ++x) {
+                if(this.get(x, y)) {
+                    this.rectangle.x = this.x + x * this.rectangle.width;
+                    this.rectangle.y = this.y + y * this.rectangle.height;
+                    if(this.rectangle.checkOverlap(other)) {
+                        return true;
+                    }
+                }
+            }
+        }
+    } else if(other instanceof Rectangle) {
+        var fx = Utils.clamp(Math.floor((other.x - this.x) / this.rectangle.width), 0, this.width);
+        var fy = Utils.clamp(Math.floor((other.y - this.y) / this.rectangle.height), 0, this.height);
+        var tx = Utils.clamp(Math.ceil((other.x + other.width - this.x) / this.rectangle.width), 0, this.width);
+        var ty = Utils.clamp(Math.ceil((other.y + other.height - this.y) / this.rectangle.height), 0, this.height);
+        for(var y = fy; y < ty; ++y) {
+            for(var x = fx; x < tx; ++x) {
+                if(this.get(x, y)) {
+                    this.rectangle.x = this.x + x * this.rectangle.width;
+                    this.rectangle.y = this.y + y * this.rectangle.height;
+                    if(this.rectangle.checkOverlap(other)) {
+                        return true;
+                    }
+                }
+            }
+        }
+    } else {
+        console.warn("Unsupported collision check");
+    }
+}
+
+Grid.prototype.checkCollision = function(other, positionDelta, intersectionPoint) {
     console.warn("Unsupported collision check");
 }
 
@@ -1228,6 +2179,10 @@ Circle.prototype.checkOverlap = function(other) {
         var dy = this.y - other.y;
         var dr = other.radius + this.radius;
         return (dx * dx + dy * dy < dr * dr);
+    } else if(other instanceof Rectangle) {
+        return other.checkOverlap(this);
+    } else if(other instanceof Grid) {
+        return other.checkOverlap(this);
     } else {
         console.warn("Unsupported overlap check");
     }
@@ -1248,6 +2203,8 @@ function Entity(x, y, radius, color) {
     this.position = new Vector2(x, y);
     this.velocity = new Vector2(0, 0);
     this.acceleration = new Vector2(0, 0);
+    this.friction = 0;
+    this.velocityLimit = null;
     this.collisionVolume = null;
     this.color = color;
     this.types = [];
@@ -1295,7 +2252,11 @@ Entity.prototype.checkOverlap = function(type, offset) {
     return this.scene.checkOverlap(this, type, offset);
 }
 
-Entity.prototype.moveToContact = function(other, direction) {
+Entity.prototype.getAllOverlaps = function(type, offset) {
+    return this.scene.getAllOverlaps(this, type, offset);
+}
+
+Entity.prototype.moveToContact = function(other, direction, adjustVelocity) {
     if(this.collisionVolume instanceof Rectangle && other.collisionVolume instanceof Rectangle) {
         switch(direction) {
             case Direction.RIGHT:
@@ -1311,6 +2272,137 @@ Entity.prototype.moveToContact = function(other, direction) {
                 this.position.y = other.position.y + other.collisionVolume.y + other.collisionVolume.height - this.collisionVolume.y;
                 break;
         }
+    } else if(this.collisionVolume instanceof Circle && other.collisionVolume instanceof Rectangle) {
+        var c = this.collisionVolume;
+        var r = other.collisionVolume;
+        var closestX = c.x + this.position.x;
+        var closestY = c.y + this.position.y;
+        var rLeft = r.x + other.position.x;
+        var rRight = r.x + other.position.x + r.width;
+        var rTop = r.y + other.position.y;
+        var rBottom = r.y + other.position.y + r.height;
+        var epsilon = 0.001;
+
+        closestX = Utils.clamp(closestX, rLeft, rRight);
+        closestY = Utils.clamp(closestY, rTop, rBottom);
+
+        var inside = false;
+        if(closestX != rLeft && closestX != rRight && closestY != rTop && closestY != rBottom) {
+            inside = true;
+            var closestDistance = Utils.distance(closestX, closestY, rLeft, closestY);
+            var newClosestX = rLeft;
+            var newClosestY = closestY;
+
+            var distance = Utils.distance(closestX, closestY, rRight, closestY)
+            if(distance < closestDistance) {
+                closestDistance = distance;
+                newClosestX = rRight;
+                newClosestY = closestY;
+            }
+
+            var distance = Utils.distance(closestX, closestY, closestX, rTop)
+            if(distance < closestDistance) {
+                closestDistance = distance;
+                newClosestX = closestX;
+                newClosestY = rTop;
+            }
+
+            var distance = Utils.distance(closestX, closestY, closestX, rBottom)
+            if(distance < closestDistance) {
+                closestDistance = distance;
+                newClosestX = closestX;
+                newClosestY = rBottom;
+            }
+
+            closestX = newClosestX;
+            closestY = newClosestY;
+        }
+
+        if(adjustVelocity) {
+            // TODO: This is a big ol hack. Should really be projecting against the edge normal but I'm too lazy right now.
+            if(closestX == rLeft && this.velocity.x > 0) {
+                this.velocity.x = 0;
+            } else if(closestX == rRight && this.velocity.x < 0) {
+                this.velocity.x = 0;
+            } else if(closestY == rTop && this.velocity.y > 0) {
+                this.velocity.y = 0;
+            } else if(closestY == rBottom && this.velocity.y < 0) {
+                this.velocity.y = 0;
+            }
+        }
+        
+        this.position.set(this.position.x + c.x - closestX, this.position.y + c.y - closestY)
+                     .normalize().scale((c.radius + epsilon) * (inside ? -1 : 1))
+                     .add(closestX - c.x, closestY - c.y);
+    } else if((this.collisionVolume instanceof Circle || this.collisionVolume instanceof Rectangle) && other.collisionVolume instanceof Grid) {
+        var initialPosition = this.position.clone();
+        var positions = [];
+        var a = this.collisionVolume;
+        var b = other.collisionVolume;
+
+        if(this.collisionVolume instanceof Circle) {
+            var fx = Utils.clamp(Math.floor((this.position.x + a.x - a.radius - b.x - other.position.x) / b.rectangle.width), 0, b.width);
+            var fy = Utils.clamp(Math.floor((this.position.y + a.y - a.radius - b.y - other.position.y) / b.rectangle.height), 0, b.height);
+            var tx = Utils.clamp(Math.ceil((this.position.x + a.x + a.radius - b.x - other.position.x) / b.rectangle.width), 0, b.width);
+            var ty = Utils.clamp(Math.ceil((this.position.y + a.y + a.radius - b.y - other.position.y) / b.rectangle.height), 0, b.height);
+        } else { // Must be a Rectangle
+            var fx = Utils.clamp(Math.floor((this.position.x + a.x - b.x - other.position.x) / b.rectangle.width), 0, b.width);
+            var fy = Utils.clamp(Math.floor((this.position.y + a.y - b.y - other.position.y) / b.rectangle.height), 0, b.height);
+            var tx = Utils.clamp(Math.ceil((this.position.x + a.x + a.width - b.x - other.position.x) / b.rectangle.width), 0, b.width);
+            var ty = Utils.clamp(Math.ceil((this.position.y + a.y + a.height - b.y - other.position.y) / b.rectangle.height), 0, b.height);
+        }
+        
+        for(var y = fy; y < ty; ++y) {
+            for(var x = fx; x < tx; ++x) {
+                if(b.get(x, y)) {
+                    var width = b.rectangle.width;
+                    var height = b.rectangle.height;
+                    b.rectangle.x = b.x + x * b.rectangle.width;
+                    b.rectangle.y = b.y + y * b.rectangle.height;
+                    // Grow the rectangle to account for the janky collision detection
+                    // if two rectangles touch each other
+                    var rw = b.rectangle.width;
+                    var rh = b.rectangle.height;
+                    var w = b.get(x - 1, y);
+                    var e = b.get(x + 1, y);
+                    var n = b.get(x, y - 1);
+                    var s = b.get(x, y + 1);
+                    if(w) {
+                        b.rectangle.x -= rw * 0.5;
+                        b.rectangle.width += rw * 0.5;
+                    }
+                    if(e) {
+                        b.rectangle.width += rw * 0.5;
+                    }
+                    if(n) {
+                        b.rectangle.y -= rh * 0.5;
+                        b.rectangle.height += rh * 0.5;
+                    }
+                    if(s) {
+                        b.rectangle.height += rh * 0.5;
+                    }
+                    other.collisionVolume = b.rectangle;
+                    this.moveToContact(other, direction, adjustVelocity);
+                    other.collisionVolume = b;
+                    positions.push(this.position.clone());
+                    // Restore rectangle size after growth
+                    b.rectangle.width = width;
+                    b.rectangle.height = height;
+                }
+            }
+        }
+        if(positions.length > 0) {
+            var resultPosition = positions[0];
+            var resultDistance = initialPosition.distance(positions[0]);
+            for(var i = 1; i < positions.length; ++i) {
+                var distance = initialPosition.distance(positions[i]);
+                if(distance < resultDistance) {
+                    resultPosition = positions[i];
+                    resultDistance = distance;
+                }
+            }
+            this.position = resultPosition;
+        }
     } else {
         console.warn("moveToContact not implemented for this collision volume combination");
     }
@@ -1321,16 +2413,33 @@ Entity.prototype.init = function() {
 }
 
 Entity.prototype.update = function(deltaTime) {
-    this.position.x += this.velocity.x * deltaTime - 0.5 * this.acceleration.x * deltaTime * deltaTime;
-    this.position.y += this.velocity.y * deltaTime - 0.5 * this.acceleration.y * deltaTime * deltaTime;
+    // TODO: Too much object cloning for an every frame, every entity method
+    var startingAcceleration = this.acceleration.clone();
+    if(this.velocity.lengthSquared() > 0 || this.acceleration.lengthSquared() > 0) {
+        // This is not perfect but the minor flaw when accelerating from 0 should never be noticable
+        var friction = Math.min(this.velocity.length() / deltaTime, this.friction);
+        this.acceleration.subtract(this.velocity.clone().normalize().scale(friction));
+    }
+
+    var startingVelocity = this.velocity.clone();
+
     this.velocity.x += this.acceleration.x * deltaTime;
     this.velocity.y += this.acceleration.y * deltaTime;
+
+    if(this.velocity.length() > this.velocityLimit) {
+        this.velocity.normalize().scale(this.velocityLimit);
+    }
+
+    var actualAcceleration = this.velocity.clone().subtract(startingVelocity);
+
+    this.position.x += this.velocity.x * deltaTime - 0.5 * actualAcceleration.x * deltaTime * deltaTime;
+    this.position.y += this.velocity.y * deltaTime - 0.5 * actualAcceleration.y * deltaTime * deltaTime;
+
+    this.acceleration = startingAcceleration;
 }
 
 Entity.prototype.draw = function() {
-    if(this.radius) {
-        renderer.drawCircle(this.position.x, this.position.y, this.radius, this.color);
-    }
+    // TODO: Draw the collision volume here
 }
 
 Entity.prototype.destroy = function() {
